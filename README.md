@@ -21,6 +21,7 @@ Note that the `-1` (or similar) is the revision of this tool, in case we need ve
 * `kubeaws/kube-spot-termination-notice-handler:1.11.3-1`
 * `kubeaws/kube-spot-termination-notice-handler:1.12.0-2`
 * `kubeaws/kube-spot-termination-notice-handler:1.13.7-1`
+* `build from Dockerfile - v1.18.8`
 
 ## Why use it
 
@@ -120,6 +121,12 @@ Example Pod Spec:
             value: development
           - name: DETACH_ASG
             value: "true"
+          - name: DRAIN_USING_LABELS
+            value: "true"
+          - name: DEREGISTER_FROM_TG
+            value: "true"
+          - name: DEREGISTRATION_DELAY
+            value: "60"
 ```
 
 ## Wechat Notifications
@@ -153,6 +160,12 @@ Example Pod Spec:
             value: development
           - name: DETACH_ASG
             value: "true"
+          - name: DRAIN_USING_LABELS
+            value: "true"
+          - name: DEREGISTER_FROM_TG
+            value: "true"
+          - name: DEREGISTRATION_DELAY
+            value: "60"
 ```
 
 ## AutoScaling Detachment

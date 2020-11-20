@@ -147,11 +147,56 @@ if [ "${DETACH_ASG}" != "false" ] && [ "${ASG_NAME}" != "" ]; then
   aws --region "${REGION}" autoscaling detach-instances --instance-ids "${INSTANCE_ID}" --auto-scaling-group-name "${ASG_NAME}" --no-should-decrement-desired-capacity &
 fi
 
+# Detach from Target group the node. Below snippet will loop through all load balancers and collect all target groups. After will list all the instances for each target group and deregister the current node from all Target Groups. Once deregistered will wait for DEREGISTRATION_PERIOD, then the script will continue with the actual draining of the node.
+DEREGISTRATION_DELAY=${DEREGISTRATION_DELAY:-60}
+
+if [ "${DEREGISTER_FROM_TG}" == "true" ]
+then
+  ALL_LBS=`aws elbv2 describe-load-balancers --query 'LoadBalancers[*].LoadBalancerArn' --output text --region "${REGION}"`
+
+  for eachLb in $ALL_LBS
+  do
+    TG_ARNS=`aws elbv2 describe-target-groups --load-balancer-arn $eachLb --query 'TargetGroups[0].TargetGroupArn' --output text --region "${REGION}"`
+    for eachTg in $TG_ARNS
+    do
+      INSTANCES=`aws elbv2 describe-target-health --target-group-arn $eachTg --query 'TargetHealthDescriptions[*].Target.Id' --output text  --region "${REGION}"`
+      if echo "$INSTANCES" | grep -q $INSTANCE_ID
+      then
+        echo "[INFO]: Found instance $INSTANCE_ID in target group $eachTg. Proceed with deregistration."
+        aws elbv2 deregister-targets --target-group-arn $eachTg --targets Id=$INSTANCE_ID  --region "${REGION}"
+      fi
+    done
+  done
+  echo "[INFO]: Waiting ${DEREGISTRATION_DELAY} seconds for node deregistration."
+  sleep ${DEREGISTRATION_DELAY}
+fi
 
 # Drain the node.
 # https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/#use-kubectl-drain-to-remove-a-node-from-service
 GRACE_PERIOD=${GRACE_PERIOD:-120}
-kubectl drain "${NODE_NAME}" --force --ignore-daemonsets --delete-local-data --grace-period="${GRACE_PERIOD}"
+
+# If DRAIN_USING_LABELS set to true drain node using pods labels in parallel, otherwise use the default behaviour
+if [ "${DRAIN_USING_LABELS}" == "true" ]
+then
+  kubectl cordon "${NODE_NAME}"
+
+  LIST_OF_PODS=`kubectl get pods --all-namespaces -o wide --field-selector spec.nodeName=${NODE_NAME} --no-headers -o custom-columns=":metadata.namespace,:metadata.name" | sed 's/[[:space:]][[:space:]]*/,/g'`
+
+  for each in $LIST_OF_PODS
+  do
+    POD_NAMESPACE=`echo $each | awk -F',' '{print $1}'`
+    POD_NAME=`echo $each | awk -F',' '{print $2}'`
+    LABEL_TO_DRAIN="`kubectl get po $POD_NAME -n $POD_NAMESPACE --no-headers -o custom-columns=':metadata.labels' | awk -F'[][]' '{print $2}' | tr ':' '=' | awk '{print $1}'` "
+
+    if ! kubectl describe po $POD_NAME -n $POD_NAMESPACE | grep -q DaemonSet
+    then
+        kubectl drain "${NODE_NAME}" --pod-selector $LABEL_TO_DRAIN --ignore-daemonsets --delete-local-data --grace-period="${GRACE_PERIOD}" &
+    fi
+  done
+  wait
+else
+  kubectl drain "${NODE_NAME}" --force --ignore-daemonsets --delete-local-data --grace-period="${GRACE_PERIOD}"
+fi
 
 # Sleep for 200 seconds to prevent this script from looping.
 # The instance should be terminated by the end of the sleep.
